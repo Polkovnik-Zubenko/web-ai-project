@@ -49,7 +49,7 @@ http://localhost
 - `manager@example.com` / `manager123`
 - `admin@example.com` / `admin123`
 
-В интерфейсе также есть регистрация нового пользователя. Для учебного проекта она работает как демо-регистрация в сессии Streamlit: пользователь может создать личный кабинет и сразу войти, но реальные пароли и персональные данные не сохраняются во внешней БД.
+В интерфейсе также есть регистрация нового пользователя. Аккаунты сохраняются в PostgreSQL, пароли хешируются bcrypt, а запросы к личному кабинету выполняются с JWT-токеном.
 
 Swagger:
 
@@ -70,6 +70,7 @@ http://localhost/grafana/
 ```
 
 Логин/пароль по умолчанию: `admin` / `admin`.
+Prometheus datasource и dashboard `Customer Feedback Desk API` создаются автоматически через Grafana provisioning.
 
 ## API примеры
 
@@ -83,6 +84,7 @@ curl http://localhost/api/health
 
 ```bash
 curl -X POST http://localhost/api/tickets \
+  -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d "{\"customer_name\":\"Анна\",\"channel\":\"chat\",\"text\":\"Курьер опоздал на два дня, поддержка не отвечает. Срочно верните деньги.\",\"creativity\":0.35,\"max_tokens\":160}"
 ```
@@ -104,7 +106,23 @@ curl -X POST http://localhost/api/tickets/sync \
 История обращений:
 
 ```bash
-curl http://localhost/api/analyses?limit=10
+curl -H "Authorization: Bearer <token>" http://localhost/api/tickets?limit=10
+```
+
+Регистрация:
+
+```bash
+curl -X POST http://localhost/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d "{\"email\":\"new@example.com\",\"password\":\"secret123\",\"name\":\"Ирина\",\"company\":\"Моя компания\"}"
+```
+
+Вход:
+
+```bash
+curl -X POST http://localhost/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d "{\"email\":\"manager@example.com\",\"password\":\"manager123\"}"
 ```
 
 ## Собственная модель
@@ -122,10 +140,20 @@ curl http://localhost/api/analyses?limit=10
 2. Выделены признаки по словам-маркерам: доставка, оплата, качество, сервис, негатив и срочность.
 3. Для быстрого инференса сформирован ONNX-граф линейного scoring.
 4. Runtime использует ONNX Runtime, а при недоступности артефакта переходит на безопасный rule-based fallback.
+5. Модель возвращает `confidence` и `explanations`: слова и фразы, из-за которых обращение было отнесено к негативу, категории или высокой срочности.
 
 `# Оптимизация инференса`
 
 ONNX Runtime подключён в `TextInsightModel.load()`, а Dockerfile генерирует ONNX-артефакт на этапе сборки.
+
+## Тесты
+
+```bash
+cd backend
+pytest
+```
+
+Тесты проверяют модель, OpenAPI-контракт и Pydantic-схемы.
 
 ## Критерии из ТЗ
 
@@ -144,6 +172,8 @@ ONNX Runtime подключён в `TextInsightModel.load()`, а Dockerfile ге
 - `# Изоляция в сети`: UI не имеет доступа к Redis/БД, только к API.
 - `# Обработка сбоев`: UI показывает понятные сообщения вместо traceback.
 - `# Визуальная репрезентация`: графики тональности и категорий в интерфейсе.
+- `# Личный кабинет`: регистрация, вход, JWT, роли manager/admin, обращения привязаны к пользователю.
+- `# Экспорт отчёта`: CSV-выгрузка истории обращений.
 - `# Reverse Proxy`: Nginx слушает порт 80 и маршрутизирует `/api/*`, `/`, `/grafana/*`.
 - `# Rate Limiting`: Nginx ограничивает API-запросы.
 - `# ORM`: SQLAlchemy ORM, бизнес-логика без прямого SQL.
@@ -161,3 +191,4 @@ ONNX Runtime подключён в `TextInsightModel.load()`, а Dockerfile ге
 - `# Compose Healthcheck`: healthcheck для Postgres, Redis, API, UI, worker.
 - `# Умный depends_on`: используется `condition: service_healthy`.
 - `# Метрики`: Prometheus собирает `/api/metrics`, Grafana подключена в compose.
+- `# Тесты`: pytest-проверки модели, схем и API-контракта.

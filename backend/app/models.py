@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, Integer, String, Text, func
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -13,6 +13,7 @@ class Analysis(Base):
     __tablename__ = "analyses"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     customer_name: Mapped[str] = mapped_column(String(120), nullable=False, default="Клиент")
     channel: Mapped[str] = mapped_column(String(40), nullable=False, default="web")
@@ -25,4 +26,16 @@ class Analysis(Base):
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     suggested_reply: Mapped[str] = mapped_column(Text, nullable=False, default="")
     metrics: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="manager")
+    company: Mapped[str] = mapped_column(String(120), nullable=False, default="Northwind Retail")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

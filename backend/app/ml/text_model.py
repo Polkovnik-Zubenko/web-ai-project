@@ -83,6 +83,8 @@ class TextInsightModel:
         neg = self._negative_score(words, text.lower())
         score = 0.0 if not words else max(-1.0, min(1.0, (pos - neg) / max(1, pos + neg + 1)))
         sentiment = "positive" if score > 0.12 else "negative" if score < -0.12 else "neutral"
+        confidence = round(min(0.98, max(0.5, abs(score) + 0.45)), 2)
+        explanations = self._explain(words, text.lower())
         avg_word_len = round(sum(len(w) for w in words) / max(1, len(words)), 2)
         readability = round(max(0, min(100, 100 - avg_word_len * 8 - max(0, len(words) / max(1, len(sentences)) - 18) * 1.5)), 2)
 
@@ -108,6 +110,8 @@ class TextInsightModel:
                 "sentences": max(1, len(sentences)),
                 "average_word_length": avg_word_len,
                 "readability_score": readability,
+                "confidence": confidence,
+                "explanations": explanations,
             },
         )
 
@@ -148,6 +152,22 @@ class TextInsightModel:
                     negation += 1
         exclamations = min(2, lowered_text.count("!")) * 0.25
         return exact + 0.9 * stems + 1.5 * phrases + 0.8 * negation + exclamations
+
+    def _explain(self, words: list[str], lowered_text: str) -> list[str]:
+        signals: list[str] = []
+        for phrase in sorted([phrase for phrase in self.negative_words if " " in phrase], key=len, reverse=True):
+            if phrase in lowered_text:
+                signals.append(phrase)
+        for word in words:
+            if word in self.urgent_terms or word in self.negative_words or any(word.startswith(stem) for stem in self.negative_stems):
+                signals.append(word)
+            if word in self.positive_words or any(word.startswith(stem) for stem in self.positive_stems):
+                signals.append(word)
+        seen = []
+        for signal in signals:
+            if signal not in seen:
+                seen.append(signal)
+        return seen[:6]
 
     def _feature_vector(self, words: list[str]) -> list[float]:
         return [

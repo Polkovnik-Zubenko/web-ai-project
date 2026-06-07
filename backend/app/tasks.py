@@ -22,6 +22,7 @@ def process_ticket(self, payload: dict) -> dict:
 
     with SessionLocal() as db:
         row = Analysis(
+            owner_id=payload.get("owner_id"),
             text=payload["text"],
             customer_name=payload.get("customer_name") or "Клиент",
             channel=payload.get("channel") or "web",

@@ -1,0 +1,33 @@
+{
+  "uid": "feedback-api-overview",
+  "title": "Customer Feedback Desk API",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Request rate",
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+      "targets": [{"expr": "sum(rate(http_requests_total[1m]))", "legendFormat": "requests/sec"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Request latency",
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+      "targets": [{"expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p95"}]
+    },
+    {
+      "type": "stat",
+      "title": "Total requests",
+      "gridPos": {"x": 0, "y": 8, "w": 8, "h": 6},
+      "targets": [{"expr": "sum(http_requests_total)", "legendFormat": "total"}]
+    },
+    {
+      "type": "stat",
+      "title": "API up",
+      "gridPos": {"x": 8, "y": 8, "w": 8, "h": 6},
+      "targets": [{"expr": "up{job=\"customer-feedback-api\"}", "legendFormat": "up"}]
+    }
+  ]
+}

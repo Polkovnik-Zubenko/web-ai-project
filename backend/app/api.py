@@ -3,16 +3,17 @@ import logging
 import time
 
 from celery.result import AsyncResult
-from fastapi import APIRouter, Depends, Response, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, HTTPException, Response, WebSocket, WebSocketDisconnect, status
 from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.celery_app import celery_app
+from app.auth import authenticate_user, create_access_token, get_current_user, hash_password
 from app.db import get_db
 from app.errors import ModelUnavailableError
-from app.models import Analysis
-from app.schemas import AnalysisListItem, AnalyzeRequest, AnalyzeResponse, HealthResponse, TaskCreatedResponse, TaskStatusResponse, TicketRequest
+from app.models import Analysis, User
+from app.schemas import AnalysisListItem, AnalyzeRequest, AnalyzeResponse, HealthResponse, LoginRequest, RegisterRequest, TaskCreatedResponse, TaskStatusResponse, TicketRequest, TokenResponse, UserResponse
 from app.state import state
 from app.tasks import process_ticket
 
@@ -43,6 +44,37 @@ def health(db: Session = Depends(get_db)) -> HealthResponse:
 
     status_value = "ok" if database_status == redis_status == "ok" and model_status == "ready" else "degraded"
     return HealthResponse(status=status_value, database=database_status, redis=redis_status, model=model_status)
+
+
+@router.post("/auth/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> TokenResponse:
+    email = payload.email.lower()
+    if db.scalar(select(User).where(User.email == email)):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Пользователь с такой почтой уже существует.")
+    user = User(
+        email=email,
+        hashed_password=hash_password(payload.password),
+        name=payload.name,
+        role="manager",
+        company=payload.company,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return TokenResponse(access_token=create_access_token(user), user=UserResponse.model_validate(user))
+
+
+@router.post("/auth/login", response_model=TokenResponse)
+def login(payload: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
+    user = authenticate_user(db, payload.email.lower(), payload.password)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверная почта или пароль.")
+    return TokenResponse(access_token=create_access_token(user), user=UserResponse.model_validate(user))
+
+
+@router.get("/auth/me", response_model=UserResponse)
+def me(current_user: User = Depends(get_current_user)) -> UserResponse:
+    return UserResponse.model_validate(current_user)
 
 
 @router.post("/analyze", response_model=AnalyzeResponse, status_code=status.HTTP_201_CREATED)
@@ -87,8 +119,9 @@ def analyze(payload: AnalyzeRequest, db: Session = Depends(get_db)) -> AnalyzeRe
 
 
 @router.post("/tickets", response_model=TaskCreatedResponse, status_code=status.HTTP_202_ACCEPTED)
-def create_ticket(payload: TicketRequest) -> TaskCreatedResponse:
-    task = process_ticket.delay(payload.model_dump())
+def create_ticket(payload: TicketRequest, current_user: User = Depends(get_current_user)) -> TaskCreatedResponse:
+    task_payload = {**payload.model_dump(), "owner_id": current_user.id}
+    task = process_ticket.delay(task_payload)
     return TaskCreatedResponse(
         task_id=task.id,
         status="queued",
@@ -98,11 +131,12 @@ def create_ticket(payload: TicketRequest) -> TaskCreatedResponse:
 
 
 @router.post("/tickets/sync", response_model=AnalyzeResponse, status_code=status.HTTP_201_CREATED)
-def create_ticket_sync(payload: TicketRequest, db: Session = Depends(get_db)) -> AnalyzeResponse:
+def create_ticket_sync(payload: TicketRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)) -> AnalyzeResponse:
     if state.model is None or not state.model.ready:
         raise ModelUnavailableError("ML-модель ещё не готова.")
     result = state.model.generate(payload.text, payload.creativity, payload.max_tokens)
     row = Analysis(
+        owner_id=current_user.id,
         text=payload.text,
         customer_name=payload.customer_name,
         channel=payload.channel,
@@ -147,11 +181,25 @@ async def task_status_ws(websocket: WebSocket, task_id: str) -> None:
 
 @router.get("/analyses", response_model=list[AnalysisListItem])
 def list_analyses(limit: int = 10, db: Session = Depends(get_db)) -> list[AnalysisListItem]:
+    return _list_analyses(limit, db, None)
+
+
+@router.get("/tickets", response_model=list[AnalysisListItem])
+def list_tickets(limit: int = 50, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)) -> list[AnalysisListItem]:
+    owner_id = None if current_user.role == "admin" else current_user.id
+    return _list_analyses(limit, db, owner_id)
+
+
+def _list_analyses(limit: int, db: Session, owner_id: int | None) -> list[AnalysisListItem]:
     limit = max(1, min(limit, 50))
-    rows = db.scalars(select(Analysis).order_by(Analysis.created_at.desc()).limit(limit)).all()
+    query = select(Analysis)
+    if owner_id is not None:
+        query = query.where(Analysis.owner_id == owner_id)
+    rows = db.scalars(query.order_by(Analysis.created_at.desc()).limit(limit)).all()
     return [
         AnalysisListItem(
             id=row.id,
+            owner_id=row.owner_id,
             customer_name=row.customer_name,
             channel=row.channel,
             sentiment=row.sentiment,
@@ -168,8 +216,11 @@ def list_analyses(limit: int = 10, db: Session = Depends(get_db)) -> list[Analys
 
 
 @router.delete("/analyses", status_code=status.HTTP_204_NO_CONTENT)
-def clear_analyses(db: Session = Depends(get_db)) -> Response:
-    for row in db.scalars(select(Analysis)).all():
+def clear_analyses(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)) -> Response:
+    query = select(Analysis)
+    if current_user.role != "admin":
+        query = query.where(Analysis.owner_id == current_user.id)
+    for row in db.scalars(query).all():
         db.delete(row)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

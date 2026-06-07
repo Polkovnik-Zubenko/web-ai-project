@@ -7,6 +7,9 @@ class Settings(BaseSettings):
     environment: str = "local"
     database_url: str = "postgresql+psycopg://ai_web:ai_web_password@postgres:5432/ai_web"
     redis_url: str = "redis://redis:6379/0"
+    jwt_secret_key: str = "local-demo-secret-change-me"
+    jwt_algorithm: str = "HS256"
+    access_token_expire_minutes: int = Field(default=720, ge=15, le=10080)
     max_text_length: int = Field(default=4000, ge=100, le=20000)
     max_tokens: int = Field(default=256, ge=32, le=1024)
 

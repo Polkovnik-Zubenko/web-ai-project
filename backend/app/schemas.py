@@ -58,6 +58,7 @@ class AnalyzeResponse(BaseModel):
 
 class AnalysisListItem(BaseModel):
     id: int
+    owner_id: int | None = None
     customer_name: str
     channel: str
     sentiment: str
@@ -93,3 +94,31 @@ class TaskStatusResponse(BaseModel):
     stage: str
     ticket_id: int | None = None
     result: dict[str, Any] | None = None
+
+
+class RegisterRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=255, examples=["manager@example.com"])
+    password: str = Field(min_length=6, max_length=72, examples=["manager123"])
+    name: str = Field(min_length=2, max_length=120, examples=["Анна Смирнова"])
+    company: str = Field(default="Northwind Retail", min_length=2, max_length=120)
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=255)
+    password: str = Field(min_length=6, max_length=72)
+
+
+class UserResponse(BaseModel):
+    id: int
+    email: str
+    name: str
+    role: str
+    company: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: Literal["bearer"] = "bearer"
+    user: UserResponse

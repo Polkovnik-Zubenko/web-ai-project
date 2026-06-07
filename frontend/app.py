@@ -9,21 +9,6 @@ import streamlit as st
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://api:8000/api").rstrip("/")
 
-DEMO_USERS = {
-    "manager@example.com": {
-        "password": "manager123",
-        "name": "Анна Смирнова",
-        "role": "Менеджер поддержки",
-        "company": "Northwind Retail",
-    },
-    "admin@example.com": {
-        "password": "admin123",
-        "name": "Саша Зубенко",
-        "role": "Руководитель поддержки",
-        "company": "Northwind Retail",
-    },
-}
-
 st.set_page_config(page_title="Customer Feedback Desk", layout="wide")
 
 st.markdown(
@@ -110,37 +95,44 @@ st.markdown(
 )
 
 
+def auth_headers() -> dict[str, str]:
+    token = st.session_state.get("token")
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 def api_get(path: str, **params):
-    response = requests.get(f"{API_BASE_URL}{path}", params=params, timeout=8)
+    response = requests.get(f"{API_BASE_URL}{path}", params=params, headers=auth_headers(), timeout=8)
     response.raise_for_status()
     return response.json()
 
 
 def api_post(path: str, payload: dict):
-    response = requests.post(f"{API_BASE_URL}{path}", json=payload, timeout=30)
+    response = requests.post(f"{API_BASE_URL}{path}", json=payload, headers=auth_headers(), timeout=30)
     response.raise_for_status()
     return response.json()
 
 
 def api_delete(path: str):
-    response = requests.delete(f"{API_BASE_URL}{path}", timeout=8)
+    response = requests.delete(f"{API_BASE_URL}{path}", headers=auth_headers(), timeout=8)
     response.raise_for_status()
 
 
 def init_state():
     st.session_state.setdefault("authenticated", False)
     st.session_state.setdefault("user", None)
+    st.session_state.setdefault("token", None)
     st.session_state.setdefault("page", "Кабинет")
-    st.session_state.setdefault("registered_users", {})
 
 
 def sign_in(email: str, password: str) -> bool:
-    users = {**DEMO_USERS, **st.session_state.registered_users}
-    user = users.get(email.strip().lower())
-    if user and user["password"] == password:
+    try:
+        payload = api_post("/auth/login", {"email": email.strip().lower(), "password": password})
         st.session_state.authenticated = True
-        st.session_state.user = {"email": email.strip().lower(), **user}
+        st.session_state.token = payload["access_token"]
+        st.session_state.user = payload["user"]
         return True
+    except requests.RequestException:
+        return False
     return False
 
 
@@ -150,16 +142,22 @@ def register_user(email: str, password: str, name: str, company: str) -> str | N
         return "Введите корректную почту."
     if len(password) < 6:
         return "Пароль должен быть не короче 6 символов."
-    if email in DEMO_USERS or email in st.session_state.registered_users:
-        return "Пользователь с такой почтой уже существует."
-    st.session_state.registered_users[email] = {
-        "password": password,
-        "name": name.strip() or "Новый пользователь",
-        "role": "Менеджер поддержки",
-        "company": company.strip() or "Моя компания",
-    }
-    sign_in(email, password)
-    return None
+    try:
+        payload = api_post(
+            "/auth/register",
+            {"email": email, "password": password, "name": name.strip() or "Новый пользователь", "company": company.strip() or "Моя компания"},
+        )
+        st.session_state.authenticated = True
+        st.session_state.token = payload["access_token"]
+        st.session_state.user = payload["user"]
+        return None
+    except requests.HTTPError as exc:
+        try:
+            return exc.response.json().get("detail", "Не удалось зарегистрироваться.")
+        except ValueError:
+            return "Не удалось зарегистрироваться."
+    except requests.RequestException:
+        return "Сервис временно недоступен."
 
 
 def poll_task(task_id: str):
@@ -180,7 +178,7 @@ def poll_task(task_id: str):
 
 def load_history(limit: int = 50) -> list[dict]:
     try:
-        return api_get("/analyses", limit=limit)
+        return api_get("/tickets", limit=limit)
     except requests.RequestException:
         st.warning("История временно недоступна.")
         return []
@@ -270,6 +268,7 @@ def render_sidebar():
     if st.sidebar.button("Выйти", use_container_width=True):
         st.session_state.authenticated = False
         st.session_state.user = None
+        st.session_state.token = None
         st.rerun()
 
 
@@ -346,13 +345,17 @@ def render_new_ticket():
             )
             status = poll_task(created["task_id"])
             st.success(f"Задача готова, обращение #{status['ticket_id']}")
-            item = api_get("/analyses", limit=1)[0]
+            item = api_get("/tickets", limit=1)[0]
             m1, m2, m3 = st.columns(3)
             m1.metric("Тон", item["sentiment"], f"{item['score']:+.2f}")
             m2.metric("Категория", item["category"])
             m3.metric("Срочность", item["urgency"])
             st.write(item["summary"])
             st.text_area("Черновик ответа", value=item["suggested_reply"], height=120)
+            st.caption(f"Уверенность: {item['metrics'].get('confidence', 0):.0%}")
+            explanations = item["metrics"].get("explanations", [])
+            if explanations:
+                st.write("Почему так решено: " + ", ".join(explanations))
             for recommendation in item["metrics"].get("recommendations", []):
                 st.write(f"- {recommendation}")
         except requests.HTTPError as exc:
@@ -376,7 +379,21 @@ def render_tickets():
         except requests.RequestException:
             st.error("Не удалось очистить историю.")
     if history:
-        st.dataframe(history_frame(history), use_container_width=True, hide_index=True)
+        df = history_frame(history)
+        f1, f2, f3 = st.columns(3)
+        tone = f1.multiselect("Тон", sorted(df["Тон"].dropna().unique()))
+        category = f2.multiselect("Категория", sorted(df["Категория"].dropna().unique()))
+        urgency = f3.multiselect("Срочность", sorted(df["Срочность"].dropna().unique()))
+        filtered = df.copy()
+        if tone:
+            filtered = filtered[filtered["Тон"].isin(tone)]
+        if category:
+            filtered = filtered[filtered["Категория"].isin(category)]
+        if urgency:
+            filtered = filtered[filtered["Срочность"].isin(urgency)]
+        st.dataframe(filtered, use_container_width=True, hide_index=True)
+        csv = filtered.to_csv(index=False).encode("utf-8-sig")
+        st.download_button("Скачать CSV", data=csv, file_name="customer_feedback_tickets.csv", mime="text/csv")
     else:
         st.caption("Обращений пока нет.")
 

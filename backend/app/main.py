@@ -12,6 +12,7 @@ from app.db import SessionLocal, engine
 from app.errors import register_error_handlers
 from app.logging_config import configure_logging
 from app.ml.text_model import build_model
+from app.seed import seed_demo_data
 from app.state import state
 
 configure_logging()
@@ -27,6 +28,7 @@ async def lifespan(app: FastAPI):
     state.redis = Redis.from_url(settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
     with SessionLocal() as db:
         db.execute(select(1))
+        seed_demo_data(db)
     logger.info("startup_complete")
     try:
         yield

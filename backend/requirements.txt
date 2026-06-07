@@ -1,12 +1,16 @@
 alembic==1.13.2
 celery==5.4.0
+bcrypt==4.0.1
 fastapi==0.115.0
+passlib[bcrypt]==1.7.4
 prometheus-fastapi-instrumentator==7.0.0
 numpy==2.1.1
 onnx==1.16.2
 onnxruntime==1.19.2
 psycopg[binary]==3.2.1
 pydantic-settings==2.5.2
+python-jose[cryptography]==3.3.0
+pytest==8.3.3
 redis==5.0.8
 SQLAlchemy==2.0.35
 uvicorn[standard]==0.30.6

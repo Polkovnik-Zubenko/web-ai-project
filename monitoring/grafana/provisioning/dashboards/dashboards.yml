@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: Customer Feedback Desk
+    orgId: 1
+    folder: Feedback Desk
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    options:
+      path: /var/lib/grafana/dashboards
