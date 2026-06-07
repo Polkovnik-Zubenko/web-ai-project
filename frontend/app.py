@@ -131,15 +131,35 @@ def init_state():
     st.session_state.setdefault("authenticated", False)
     st.session_state.setdefault("user", None)
     st.session_state.setdefault("page", "Кабинет")
+    st.session_state.setdefault("registered_users", {})
 
 
 def sign_in(email: str, password: str) -> bool:
-    user = DEMO_USERS.get(email.strip().lower())
+    users = {**DEMO_USERS, **st.session_state.registered_users}
+    user = users.get(email.strip().lower())
     if user and user["password"] == password:
         st.session_state.authenticated = True
         st.session_state.user = {"email": email.strip().lower(), **user}
         return True
     return False
+
+
+def register_user(email: str, password: str, name: str, company: str) -> str | None:
+    email = email.strip().lower()
+    if "@" not in email or "." not in email:
+        return "Введите корректную почту."
+    if len(password) < 6:
+        return "Пароль должен быть не короче 6 символов."
+    if email in DEMO_USERS or email in st.session_state.registered_users:
+        return "Пользователь с такой почтой уже существует."
+    st.session_state.registered_users[email] = {
+        "password": password,
+        "name": name.strip() or "Новый пользователь",
+        "role": "Менеджер поддержки",
+        "company": company.strip() or "Моя компания",
+    }
+    sign_in(email, password)
+    return None
 
 
 def poll_task(task_id: str):
@@ -211,13 +231,27 @@ def render_login():
             unsafe_allow_html=True,
         )
     with right:
-        st.subheader("Вход по почте и паролю")
-        email = st.text_input("Почта", value="manager@example.com")
-        password = st.text_input("Пароль", value="manager123", type="password")
-        if st.button("Войти", type="primary", use_container_width=True):
-            if sign_in(email, password):
-                st.rerun()
-            st.error("Неверная почта или пароль.")
+        login_tab, register_tab = st.tabs(["Вход", "Регистрация"])
+        with login_tab:
+            st.subheader("Вход по почте и паролю")
+            email = st.text_input("Почта", value="manager@example.com")
+            password = st.text_input("Пароль", value="manager123", type="password")
+            if st.button("Войти", type="primary", use_container_width=True):
+                if sign_in(email, password):
+                    st.rerun()
+                st.error("Неверная почта или пароль.")
+        with register_tab:
+            st.subheader("Создать личный кабинет")
+            reg_name = st.text_input("Имя", value="Ирина")
+            reg_company = st.text_input("Компания", value="Моя компания")
+            reg_email = st.text_input("Рабочая почта", value="irina@example.com")
+            reg_password = st.text_input("Новый пароль", value="", type="password")
+            if st.button("Зарегистрироваться", type="primary", use_container_width=True):
+                error = register_user(reg_email, reg_password, reg_name, reg_company)
+                if error:
+                    st.error(error)
+                else:
+                    st.rerun()
 
 
 def render_sidebar():
@@ -370,7 +404,7 @@ def render_analytics():
         ).properties(background="#172033")
         st.altair_chart(chart, use_container_width=True)
     st.markdown(
-        '<div class="desk-card"><strong>Grafana</strong><br><span class="desk-muted">Мониторинг API доступен по адресу /grafana/ после пересборки compose.</span></div>',
+        '<div class="desk-card"><strong>Grafana</strong><br><a href="/grafana/" target="_self">Открыть мониторинг API</a></div>',
         unsafe_allow_html=True,
     )
 

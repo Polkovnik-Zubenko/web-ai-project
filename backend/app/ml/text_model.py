@@ -30,7 +30,19 @@ class TextInsightModel:
         self.ready = False
         self.onnx_session = None
         self.positive_words = {"good", "great", "fast", "clear", "useful", "love", "excellent", "понятный", "быстро", "хороший", "удобный"}
-        self.negative_words = {"bad", "slow", "error", "fail", "broken", "hate", "unclear", "плохо", "ошибка", "медленно", "сломано"}
+        self.negative_words = {
+            "bad", "slow", "error", "fail", "broken", "hate", "unclear",
+            "плохо", "ужасно", "отвратительно", "ошибка", "медленно", "сломано",
+            "опоздал", "опоздала", "опоздали", "жду", "верните", "жалоба",
+            "не отвечает", "нет ответа", "не работает", "не пришел", "не пришёл",
+            "не доставили", "не получил", "не получила", "сорвали", "разочарован",
+        }
+        self.negative_stems = {
+            "плох", "ужас", "отврат", "ошиб", "медлен", "сломан", "опозд",
+            "задерж", "вернит", "возврат", "жалоб", "груб", "разочар",
+            "неработ", "поврежд", "брак", "сорван", "проблем",
+        }
+        self.positive_stems = {"хорош", "быстр", "удоб", "понят", "спасибо", "помог", "отлич", "довол"}
         self.category_terms = {
             "delivery": {"доставка", "курьер", "посылка", "срок", "опоздал", "shipping", "delivery"},
             "payment": {"оплата", "карта", "деньги", "чек", "возврат", "payment", "refund", "invoice"},
@@ -67,10 +79,10 @@ class TextInsightModel:
 
         words = re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", text.lower())
         sentences = [s for s in re.split(r"[.!?]+", text) if s.strip()]
-        pos = sum(word in self.positive_words for word in words)
-        neg = sum(word in self.negative_words for word in words)
-        score = 0.0 if not words else max(-1.0, min(1.0, (pos - neg) / max(1, pos + neg + 2)))
-        sentiment = "positive" if score > 0.15 else "negative" if score < -0.15 else "neutral"
+        pos = self._positive_score(words, text.lower())
+        neg = self._negative_score(words, text.lower())
+        score = 0.0 if not words else max(-1.0, min(1.0, (pos - neg) / max(1, pos + neg + 1)))
+        sentiment = "positive" if score > 0.12 else "negative" if score < -0.12 else "neutral"
         avg_word_len = round(sum(len(w) for w in words) / max(1, len(words)), 2)
         readability = round(max(0, min(100, 100 - avg_word_len * 8 - max(0, len(words) / max(1, len(sentences)) - 18) * 1.5)), 2)
 
@@ -119,13 +131,31 @@ class TextInsightModel:
         category, value = max(scores.items(), key=lambda item: item[1])
         return category if value > 0 else "other"
 
+    def _positive_score(self, words: list[str], lowered_text: str) -> float:
+        exact = sum(word in self.positive_words for word in words)
+        stems = sum(any(word.startswith(stem) for stem in self.positive_stems) for word in words)
+        return exact + 0.8 * stems
+
+    def _negative_score(self, words: list[str], lowered_text: str) -> float:
+        exact = sum(word in self.negative_words for word in words)
+        stems = sum(any(word.startswith(stem) for stem in self.negative_stems) for word in words)
+        phrases = sum(phrase in lowered_text for phrase in self.negative_words if " " in phrase)
+        negation = 0
+        for index, word in enumerate(words[:-1]):
+            if word in {"не", "нет", "никто", "никак"}:
+                next_word = words[index + 1]
+                if next_word not in {"плохо", "ужасно"}:
+                    negation += 1
+        exclamations = min(2, lowered_text.count("!")) * 0.25
+        return exact + 0.9 * stems + 1.5 * phrases + 0.8 * negation + exclamations
+
     def _feature_vector(self, words: list[str]) -> list[float]:
         return [
             float(sum(word in self.category_terms["delivery"] for word in words)),
             float(sum(word in self.category_terms["payment"] for word in words)),
             float(sum(word in self.category_terms["quality"] for word in words)),
             float(sum(word in self.category_terms["service"] for word in words)),
-            float(sum(word in self.negative_words for word in words)),
+            float(self._negative_score(words, " ".join(words))),
             float(sum(word in self.urgent_terms for word in words)),
         ]
 
