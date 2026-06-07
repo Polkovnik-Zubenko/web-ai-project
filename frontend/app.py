@@ -8,15 +8,14 @@ import streamlit as st
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://api:8000/api").rstrip("/")
 
-st.set_page_config(page_title="AI Text Service", layout="wide")
+st.set_page_config(page_title="Customer Feedback Desk", layout="wide")
 
 st.markdown(
     """
     <style>
-    .stApp { background: #f7f8fb; color: #17202a; }
-    .metric-box { padding: 12px 14px; border: 1px solid #d9dee8; border-radius: 8px; background: white; }
-    .status-ok { color: #176b3a; font-weight: 700; }
-    .status-bad { color: #a13b32; font-weight: 700; }
+    .stApp { background: #f5f7fa; color: #17202a; }
+    [data-testid="stMetric"] { background: white; border: 1px solid #dce2eb; padding: 12px; border-radius: 8px; }
+    .block-container { padding-top: 1.4rem; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -40,87 +39,90 @@ def api_delete(path: str):
     response.raise_for_status()
 
 
-st.title("AI Text Service")
+def poll_task(task_id: str):
+    progress = st.progress(0)
+    status_box = st.empty()
+    for _ in range(45):
+        status = api_get(f"/tasks/{task_id}")
+        progress.progress(status["progress"])
+        status_box.caption(f"Статус задачи: {status['state']} · этап: {status['stage']}")
+        if status["state"] == "SUCCESS":
+            progress.progress(100)
+            return status
+        if status["state"] in {"FAILURE", "REVOKED"}:
+            raise RuntimeError("Задача завершилась с ошибкой.")
+        time.sleep(1)
+    raise TimeoutError("Анализ занимает больше обычного. Проверьте историю через несколько секунд.")
 
-status_col, action_col = st.columns([3, 1])
+
+st.title("Customer Feedback Desk")
+st.caption("Рабочий кабинет для разбора клиентских обращений: приоритет, категория, тональность и черновик ответа.")
+
 try:
     health = api_get("/health")
-    status_col.markdown(
-        f"Статус: <span class='status-ok'>{health['status']}</span> · DB {health['database']} · Redis {health['redis']} · Model {health['model']}",
-        unsafe_allow_html=True,
-    )
+    st.success(f"Сервис готов: DB {health['database']}, Redis {health['redis']}, Model {health['model']}")
 except requests.RequestException:
-    status_col.error("Сервис временно недоступен. Попробуйте обновить страницу позже.")
     health = None
+    st.error("Сервис временно недоступен.")
 
-with action_col:
-    refresh = st.button("Обновить", use_container_width=True)
-    if refresh:
-        st.rerun()
+form_col, result_col = st.columns([1.05, 1])
 
-left, right = st.columns([1.2, 1])
-
-with left:
+with form_col:
+    st.subheader("Новое обращение")
+    customer_name = st.text_input("Клиент", value="Анна")
+    channel = st.selectbox("Канал", ["web", "email", "chat", "marketplace", "phone"], index=2)
     text = st.text_area(
-        "Текст для анализа",
-        value="FastAPI помогает быстро собрать понятный сервис, а аккуратный интерфейс делает результат удобным для пользователя.",
+        "Сообщение клиента",
+        value="Курьер опоздал на два дня, поддержка не отвечает. Срочно верните деньги или решите вопрос сегодня.",
         height=190,
         max_chars=4000,
     )
-    creativity = st.slider("Креативность рекомендаций", 0.0, 1.0, 0.3, 0.05)
-    max_tokens = st.slider("Максимальная длина ответа", 32, 1024, 160, 16)
-    submitted = st.button("Проанализировать", type="primary", use_container_width=True, disabled=health is None)
+    creativity = st.slider("Свобода формулировки ответа", 0.0, 1.0, 0.35, 0.05)
+    max_tokens = st.slider("Максимальная длина анализа", 32, 1024, 160, 16)
+    submitted = st.button("Разобрать обращение", type="primary", use_container_width=True, disabled=health is None)
 
-with right:
+with result_col:
     st.subheader("Результат")
     if submitted:
-        progress = st.progress(0)
         try:
-            # UX асинхронности
-            for value in (20, 45, 70):
-                progress.progress(value)
-                time.sleep(0.12)
-            result = api_post("/analyze", {"text": text, "creativity": creativity, "max_tokens": max_tokens})
-            progress.progress(100)
-            st.success("Анализ готов")
-            st.metric("Тональность", result["sentiment"], f"{result['score']:+.2f}")
-            st.write(result["summary"])
-            st.write("Рекомендации")
-            for item in result["recommendations"]:
-                st.write(f"- {item}")
-            metrics = result["metrics"]
-            chart_data = pd.DataFrame(
-                [
-                    {"metric": "Символы", "value": metrics["characters"]},
-                    {"metric": "Слова", "value": metrics["words"]},
-                    {"metric": "Предложения", "value": metrics["sentences"]},
-                    {"metric": "Читабельность", "value": metrics["readability_score"]},
-                ]
+            created = api_post(
+                "/tickets",
+                {
+                    "customer_name": customer_name,
+                    "channel": channel,
+                    "text": text,
+                    "creativity": creativity,
+                    "max_tokens": max_tokens,
+                },
             )
-            chart = alt.Chart(chart_data).mark_bar(color="#3478f6").encode(
-                x=alt.X("metric:N", title=""),
-                y=alt.Y("value:Q", title="Значение"),
-                tooltip=["metric", "value"],
-            )
-            st.altair_chart(chart, use_container_width=True)
+            status = poll_task(created["task_id"])
+            st.success(f"Задача готова, обращение #{status['ticket_id']}")
+            history = api_get("/analyses", limit=1)
+            item = history[0]
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Тон", item["sentiment"], f"{item['score']:+.2f}")
+            m2.metric("Категория", item["category"])
+            m3.metric("Срочность", item["urgency"])
+            st.write(item["summary"])
+            st.text_area("Черновик ответа", value=item["suggested_reply"], height=100)
+            for recommendation in item["metrics"].get("recommendations", []):
+                st.write(f"- {recommendation}")
         except requests.HTTPError as exc:
+            detail = "Не удалось обработать обращение."
             try:
-                detail = exc.response.json().get("detail", "Не удалось выполнить анализ.")
+                detail = exc.response.json().get("detail", detail)
             except ValueError:
-                detail = "Не удалось выполнить анализ."
+                pass
             st.error(detail)
-        except requests.RequestException:
-            st.error("Сервис временно недоступен.")
-        finally:
-            progress.empty()
+        except (requests.RequestException, RuntimeError, TimeoutError) as exc:
+            st.error(str(exc) or "Сервис временно недоступен.")
     else:
-        st.info("Введите текст и запустите анализ.")
+        st.info("Заполните обращение, чтобы получить приоритет, категорию и черновик ответа.")
 
 st.divider()
-
-history_col, clear_col = st.columns([4, 1])
-history_col.subheader("История анализов")
-if clear_col.button("Очистить", use_container_width=True):
+history_title, clear_col = st.columns([4, 1])
+history_title.subheader("Очередь и аналитика")
+if clear_col.button("Очистить историю", use_container_width=True):
     try:
         api_delete("/analyses")
         st.rerun()
@@ -128,21 +130,43 @@ if clear_col.button("Очистить", use_container_width=True):
         st.error("Не удалось очистить историю.")
 
 try:
-    history = api_get("/analyses", limit=10)
-    if history:
-        rows = [
+    history = api_get("/analyses", limit=50)
+except requests.RequestException:
+    history = []
+    st.warning("История временно недоступна.")
+
+if history:
+    df = pd.DataFrame(
+        [
             {
                 "ID": item["id"],
+                "Клиент": item["customer_name"],
+                "Канал": item["channel"],
                 "Тон": item["sentiment"],
+                "Категория": item["category"],
+                "Срочность": item["urgency"],
                 "Оценка": item["score"],
                 "Слова": item["metrics"].get("words"),
-                "Читабельность": item["metrics"].get("readability_score"),
                 "Время": item["created_at"],
             }
             for item in history
         ]
-        st.dataframe(rows, use_container_width=True, hide_index=True)
-    else:
-        st.caption("История пока пустая.")
-except requests.RequestException:
-    st.warning("История недоступна, но интерфейс продолжает работать.")
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        sentiment_chart = alt.Chart(df).mark_bar(color="#2f6fed").encode(
+            x=alt.X("Тон:N", title="Тональность"),
+            y=alt.Y("count():Q", title="Количество"),
+            tooltip=["Тон", "count()"],
+        )
+        st.altair_chart(sentiment_chart, use_container_width=True)
+    with c2:
+        category_chart = alt.Chart(df).mark_bar(color="#20a67a").encode(
+            x=alt.X("Категория:N", title="Категория"),
+            y=alt.Y("count():Q", title="Количество"),
+            tooltip=["Категория", "count()"],
+        )
+        st.altair_chart(category_chart, use_container_width=True)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+else:
+    st.caption("Обращений пока нет.")

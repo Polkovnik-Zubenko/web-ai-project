@@ -1,46 +1,68 @@
-# AI Web Text Service
+# Customer Feedback Desk
 
-Веб-сервис для анализа текста: API принимает текст, лёгкая ML-модель оценивает тональность, читабельность и ключевые характеристики, сохраняет результат в БД и отдаёт историю запросов в интерфейс.
+Customer Feedback Desk - веб-сервис для малого бизнеса и службы поддержки. Он принимает клиентские обращения, определяет тональность, категорию проблемы, срочность, формирует краткое резюме и черновик ответа менеджеру.
+
+## Бизнес-потребность
+
+Когда обращений становится много, менеджер легко пропускает срочный негатив: задержку доставки, спор по оплате, жалобу на качество или плохой опыт поддержки. Сервис закрывает простую потребность: быстро разобрать входящий поток сообщений, выделить приоритетные обращения и подготовить первый ответ клиенту.
 
 ## Архитектура
 
-Пользователь открывает `http://localhost`. Nginx принимает весь трафик, ограничивает частоту запросов и маршрутизирует:
+Пользователь открывает `http://localhost`. Nginx является единой точкой входа, ограничивает частоту API-запросов и маршрутизирует:
 
-- `/api/*` -> FastAPI backend
-- `/` -> Streamlit frontend
-
-Backend общается с PostgreSQL через SQLAlchemy ORM, проверяет Redis в health check и хранит состояние в БД. UI общается только с REST API и не имеет доступа к БД или Redis.
+- `/` -> Streamlit UI
+- `/api/*` -> FastAPI API
+- `/grafana/*` -> Grafana
 
 ```mermaid
 flowchart LR
   User[Browser] --> Nginx[Nginx :80]
-  Nginx -->|/| UI[Streamlit UI]
-  Nginx -->|/api/*| API[FastAPI]
-  UI -->|REST| API
+  Nginx --> UI[Streamlit]
+  Nginx --> API[FastAPI replicas]
+  Nginx --> Grafana[Grafana]
+  UI -->|REST only| API
   API --> DB[(PostgreSQL)]
-  API --> Redis[(Redis)]
-  API --> Model[TextInsightModel]
+  API --> Redis[(Redis broker/backend)]
+  API --> Worker[Celery workers]
+  Worker --> Redis
+  Worker --> DB
+  Worker --> Model[Custom feedback model + ONNX scoring]
+  Prometheus --> API
+  Grafana --> Prometheus
 ```
 
 ## Запуск
 
-1. Скопируйте пример окружения:
-
 ```bash
 cp .env.example .env
-```
-
-2. Запустите проект одной командой:
-
-```bash
 docker compose up --build -d
 ```
 
-3. Откройте интерфейс:
+Открыть интерфейс:
 
 ```text
 http://localhost
 ```
+
+Swagger:
+
+```text
+http://localhost/api/docs
+```
+
+Метрики:
+
+```text
+http://localhost/api/metrics
+```
+
+Grafana:
+
+```text
+http://localhost/grafana/
+```
+
+Логин/пароль по умолчанию: `admin` / `admin`.
 
 ## API примеры
 
@@ -50,45 +72,85 @@ Health check:
 curl http://localhost/api/health
 ```
 
-Анализ текста:
+Асинхронная постановка обращения в очередь:
 
 ```bash
-curl -X POST http://localhost/api/analyze \
+curl -X POST http://localhost/api/tickets \
   -H "Content-Type: application/json" \
-  -d "{\"text\":\"FastAPI делает сервис понятным и быстрым.\",\"creativity\":0.3,\"max_tokens\":120}"
+  -d "{\"customer_name\":\"Анна\",\"channel\":\"chat\",\"text\":\"Курьер опоздал на два дня, поддержка не отвечает. Срочно верните деньги.\",\"creativity\":0.35,\"max_tokens\":160}"
 ```
 
-История:
+Polling статуса:
 
 ```bash
-curl http://localhost/api/analyses?limit=5
+curl http://localhost/api/tasks/<task_id>
 ```
 
-Очистка истории:
+Синхронный анализ для отладки:
 
 ```bash
-curl -X DELETE http://localhost/api/analyses
+curl -X POST http://localhost/api/tickets/sync \
+  -H "Content-Type: application/json" \
+  -d "{\"customer_name\":\"Анна\",\"channel\":\"chat\",\"text\":\"Спасибо, менеджер быстро помог решить вопрос.\",\"creativity\":0.2,\"max_tokens\":120}"
 ```
 
-Swagger доступен по адресу:
+История обращений:
 
-```text
-http://localhost/api/docs
+```bash
+curl http://localhost/api/analyses?limit=10
 ```
+
+## Собственная модель
+
+`# Своя модель`
+
+Модель находится в `backend/app/ml`. Для проекта создан локальный учебный набор `training_data.json` с типовыми обращениями поддержки: доставка, оплата, качество, сервис, нейтральные и негативные сообщения. Скрипт `train_model.py` строит артефакты модели в `model_cache`:
+
+- `model_card.json` - описание признаков, классов и процесса обучения;
+- `customer_feedback_model.onnx` - компактный ONNX-граф для scoring признаков категории.
+
+Процесс обучения:
+
+1. Собран небольшой доменный датасет типовых обращений.
+2. Выделены признаки по словам-маркерам: доставка, оплата, качество, сервис, негатив и срочность.
+3. Для быстрого инференса сформирован ONNX-граф линейного scoring.
+4. Runtime использует ONNX Runtime, а при недоступности артефакта переходит на безопасный rule-based fallback.
+
+`# Оптимизация инференса`
+
+ONNX Runtime подключён в `TextInsightModel.load()`, а Dockerfile генерирует ONNX-артефакт на этапе сборки.
 
 ## Критерии из ТЗ
 
-- `# Управление жизненным циклом контекстных переменных`: FastAPI lifespan инициализирует модель, Redis и проверяет подключение к БД.
-- `# Валидация данных`: строгие Pydantic request/response схемы с ограничениями.
-- `# Обработка ошибок`: кастомные обработчики возвращают понятный JSON и корректные HTTP статусы.
-- `# Изоляция ML-логики`: модель вынесена в отдельный класс `TextInsightModel`.
-- `# Управление ресурсами`: ограничены длина входного текста и максимальная длина результата.
-- `# Логирование`: логируются этапы запуска и инференса.
-- `# UX асинхронности`: UI показывает прогресс и обрабатывает ожидание.
-- `# Reverse Proxy`: Nginx является единой точкой входа и маршрутизирует `/api/*`.
-- `# ORM`: SQLAlchemy используется без прямых SQL запросов в бизнес-логике.
-- `# Версионирование данных`: Alembic миграция создаёт таблицу анализов.
-- `# Docker Compose`: настроены сети, volumes, depends_on и healthcheck.
-- `# Stateless архитектура`: состояние хранится в PostgreSQL, не в памяти API.
-- `# Graceful Shutdown`: FastAPI закрывает Redis/DB подключения в lifespan shutdown.
-- `# Health Checks`: API проверяет БД, Redis и готовность ML-модели.
+- `# Управление жизненным циклом контекстных переменных`: FastAPI lifespan инициализирует модель, Redis и проверяет БД.
+- `# Асинхронная очередь задач`: Celery worker обрабатывает тяжёлую задачу анализа обращения.
+- `# Брокер и Backend`: Redis используется как broker и result backend, `/api/tasks/{task_id}` отдаёт polling-статус.
+- `# реализована проверка статуса задачи посредством WebSocket`: `/api/tasks/{task_id}/ws`.
+- `# Валидация данных`: строгие Pydantic-схемы с ограничениями и описаниями.
+- `# Обработка ошибок`: кастомные JSON-ошибки и корректные HTTP-статусы.
+- `# Изоляция ML-логики`: модель инкапсулирована в `TextInsightModel`.
+- `# Управление ресурсами`: ограничены длина текста, max_tokens и concurrency worker.
+- `# Логирование`: логируется startup, инференс и сохранение задач.
+- `# Визуальный интерфейс`: UI общается минимум с `/health`, `/tickets`, `/tasks`, `/analyses`.
+- `# Слабая связность`: Streamlit ходит только в REST API.
+- `# UX асинхронности`: UI показывает progress bar и polling.
+- `# Изоляция в сети`: UI не имеет доступа к Redis/БД, только к API.
+- `# Обработка сбоев`: UI показывает понятные сообщения вместо traceback.
+- `# Визуальная репрезентация`: графики тональности и категорий в интерфейсе.
+- `# Reverse Proxy`: Nginx слушает порт 80 и маршрутизирует `/api/*`, `/`, `/grafana/*`.
+- `# Rate Limiting`: Nginx ограничивает API-запросы.
+- `# ORM`: SQLAlchemy ORM, бизнес-логика без прямого SQL.
+- `# Версионирование данных`: Alembic миграции `0001` и `0002`.
+- `# Оптимизация сборок`: Dockerfile использует кэшируемые слои зависимостей.
+- `# uv менеджмент зависимостей`: зависимости ставятся через `uv pip install`.
+- `# Networks`: `frontend_net` и internal `backend_net`.
+- `# Volumes`: PostgreSQL, Redis, model cache, Grafana.
+- `# depends_on`: сервисы ждут health checks.
+- `# Stateless архитектура`: состояние задач в Redis, обращения в PostgreSQL.
+- `# Горизонтальное масштабирование`: `deploy.replicas` для API и worker.
+- `# Балансировка нагрузки`: Nginx обращается к upstream API, Docker DNS распределяет по репликам.
+- `# Graceful Shutdown`: lifespan закрывает Redis/DB.
+- `# API Health Check`: `/api/health` проверяет БД, Redis и модель.
+- `# Compose Healthcheck`: healthcheck для Postgres, Redis, API, UI, worker.
+- `# Умный depends_on`: используется `condition: service_healthy`.
+- `# Метрики`: Prometheus собирает `/api/metrics`, Grafana подключена в compose.

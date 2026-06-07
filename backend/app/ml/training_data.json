@@ -1,0 +1,12 @@
+[
+  {"text": "Курьер опоздал, доставка сорвана, срочно решите вопрос", "category": "delivery", "urgency": "high", "sentiment": "negative"},
+  {"text": "Не пришел чек после оплаты картой", "category": "payment", "urgency": "medium", "sentiment": "negative"},
+  {"text": "Товар пришел поврежденный, качество плохое", "category": "quality", "urgency": "medium", "sentiment": "negative"},
+  {"text": "Оператор поддержки ответил грубо", "category": "service", "urgency": "medium", "sentiment": "negative"},
+  {"text": "Спасибо, доставка была быстрой", "category": "delivery", "urgency": "normal", "sentiment": "positive"},
+  {"text": "Нужен возврат денег, оплату списали дважды", "category": "payment", "urgency": "high", "sentiment": "negative"},
+  {"text": "Менеджер быстро помог решить вопрос", "category": "service", "urgency": "normal", "sentiment": "positive"},
+  {"text": "Упаковка грязная, товар выглядит плохо", "category": "quality", "urgency": "medium", "sentiment": "negative"},
+  {"text": "Хочу уточнить статус заказа", "category": "delivery", "urgency": "normal", "sentiment": "neutral"},
+  {"text": "Не понимаю условия счета и оплаты", "category": "payment", "urgency": "normal", "sentiment": "neutral"}
+]

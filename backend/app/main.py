@@ -2,6 +2,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from prometheus_fastapi_instrumentator import Instrumentator
 from redis import Redis
 from sqlalchemy import select
 
@@ -48,3 +49,4 @@ app = FastAPI(
 )
 register_error_handlers(app)
 app.include_router(router)
+Instrumentator().instrument(app).expose(app, endpoint="/api/metrics")

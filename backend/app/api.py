@@ -1,16 +1,20 @@
+import asyncio
 import logging
 import time
 
-from fastapi import APIRouter, Depends, Response, status
+from celery.result import AsyncResult
+from fastapi import APIRouter, Depends, Response, WebSocket, WebSocketDisconnect, status
 from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.celery_app import celery_app
 from app.db import get_db
 from app.errors import ModelUnavailableError
 from app.models import Analysis
-from app.schemas import AnalysisListItem, AnalyzeRequest, AnalyzeResponse, HealthResponse
+from app.schemas import AnalysisListItem, AnalyzeRequest, AnalyzeResponse, HealthResponse, TaskCreatedResponse, TaskStatusResponse, TicketRequest
 from app.state import state
+from app.tasks import process_ticket
 
 router = APIRouter(prefix="/api", tags=["text-analysis"])
 logger = logging.getLogger(__name__)
@@ -50,11 +54,16 @@ def analyze(payload: AnalyzeRequest, db: Session = Depends(get_db)) -> AnalyzeRe
     result = state.model.generate(payload.text, payload.creativity, payload.max_tokens)
     row = Analysis(
         text=payload.text,
+        customer_name="Клиент",
+        channel="web",
         creativity=payload.creativity,
         max_tokens=payload.max_tokens,
         sentiment=result.sentiment,
         score=result.score,
+        category=result.category,
+        urgency=result.urgency,
         summary=result.summary,
+        suggested_reply=result.suggested_reply,
         metrics={**result.metrics, "recommendations": result.recommendations},
     )
     # ORM
@@ -66,12 +75,74 @@ def analyze(payload: AnalyzeRequest, db: Session = Depends(get_db)) -> AnalyzeRe
     return AnalyzeResponse(
         id=row.id,
         sentiment=row.sentiment,
+        category=row.category,
+        urgency=row.urgency,
         score=row.score,
         summary=row.summary,
+        suggested_reply=row.suggested_reply,
         recommendations=result.recommendations,
         metrics=result.metrics,
         created_at=row.created_at,
     )
+
+
+@router.post("/tickets", response_model=TaskCreatedResponse, status_code=status.HTTP_202_ACCEPTED)
+def create_ticket(payload: TicketRequest) -> TaskCreatedResponse:
+    task = process_ticket.delay(payload.model_dump())
+    return TaskCreatedResponse(
+        task_id=task.id,
+        status="queued",
+        status_url=f"/api/tasks/{task.id}",
+        websocket_url=f"/api/tasks/{task.id}/ws",
+    )
+
+
+@router.post("/tickets/sync", response_model=AnalyzeResponse, status_code=status.HTTP_201_CREATED)
+def create_ticket_sync(payload: TicketRequest, db: Session = Depends(get_db)) -> AnalyzeResponse:
+    if state.model is None or not state.model.ready:
+        raise ModelUnavailableError("ML-модель ещё не готова.")
+    result = state.model.generate(payload.text, payload.creativity, payload.max_tokens)
+    row = Analysis(
+        text=payload.text,
+        customer_name=payload.customer_name,
+        channel=payload.channel,
+        creativity=payload.creativity,
+        max_tokens=payload.max_tokens,
+        sentiment=result.sentiment,
+        score=result.score,
+        category=result.category,
+        urgency=result.urgency,
+        summary=result.summary,
+        suggested_reply=result.suggested_reply,
+        metrics={**result.metrics, "recommendations": result.recommendations},
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _to_response(row)
+
+
+@router.get("/tasks/{task_id}", response_model=TaskStatusResponse)
+def get_task_status(task_id: str) -> TaskStatusResponse:
+    # Брокер и Backend
+    task = AsyncResult(task_id, app=celery_app)
+    return _task_status(task_id, task)
+
+
+@router.websocket("/tasks/{task_id}/ws")
+async def task_status_ws(websocket: WebSocket, task_id: str) -> None:
+    # реализована проверка статуса задачи посредством WebSocket
+    await websocket.accept()
+    try:
+        while True:
+            task = AsyncResult(task_id, app=celery_app)
+            status_payload = _task_status(task_id, task).model_dump()
+            await websocket.send_json(status_payload)
+            if task.state in {"SUCCESS", "FAILURE", "REVOKED"}:
+                break
+            await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        logger.info("task_ws_disconnect task_id=%s", task_id)
 
 
 @router.get("/analyses", response_model=list[AnalysisListItem])
@@ -81,9 +152,14 @@ def list_analyses(limit: int = 10, db: Session = Depends(get_db)) -> list[Analys
     return [
         AnalysisListItem(
             id=row.id,
+            customer_name=row.customer_name,
+            channel=row.channel,
             sentiment=row.sentiment,
+            category=row.category,
+            urgency=row.urgency,
             score=row.score,
             summary=row.summary,
+            suggested_reply=row.suggested_reply,
             metrics=row.metrics,
             created_at=row.created_at,
         )
@@ -97,3 +173,32 @@ def clear_analyses(db: Session = Depends(get_db)) -> Response:
         db.delete(row)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+def _to_response(row: Analysis) -> AnalyzeResponse:
+    return AnalyzeResponse(
+        id=row.id,
+        sentiment=row.sentiment,
+        category=row.category,
+        urgency=row.urgency,
+        score=row.score,
+        summary=row.summary,
+        suggested_reply=row.suggested_reply,
+        recommendations=row.metrics.get("recommendations", []),
+        metrics=row.metrics,
+        created_at=row.created_at,
+    )
+
+
+def _task_status(task_id: str, task: AsyncResult) -> TaskStatusResponse:
+    info = task.info if isinstance(task.info, dict) else {}
+    progress = int(info.get("progress", 100 if task.successful() else 0))
+    stage = str(info.get("stage", task.state.lower()))
+    return TaskStatusResponse(
+        task_id=task_id,
+        state=task.state,
+        progress=progress,
+        stage=stage,
+        ticket_id=info.get("ticket_id"),
+        result=task.result if task.successful() and isinstance(task.result, dict) else None,
+    )

@@ -28,6 +28,11 @@ class AnalyzeRequest(BaseModel):
     )
 
 
+class TicketRequest(AnalyzeRequest):
+    customer_name: str = Field(default="Клиент", min_length=1, max_length=120, description="Имя клиента")
+    channel: Literal["web", "email", "chat", "marketplace", "phone"] = Field(default="web", description="Канал обращения")
+
+
 class TextMetrics(BaseModel):
     characters: int
     words: int
@@ -39,8 +44,11 @@ class TextMetrics(BaseModel):
 class AnalyzeResponse(BaseModel):
     id: int
     sentiment: Literal["positive", "neutral", "negative"]
+    category: Literal["delivery", "payment", "quality", "service", "other"]
+    urgency: Literal["normal", "medium", "high"]
     score: float = Field(ge=-1.0, le=1.0)
     summary: str
+    suggested_reply: str
     recommendations: list[str]
     metrics: TextMetrics
     created_at: datetime
@@ -50,9 +58,14 @@ class AnalyzeResponse(BaseModel):
 
 class AnalysisListItem(BaseModel):
     id: int
+    customer_name: str
+    channel: str
     sentiment: str
+    category: str
+    urgency: str
     score: float
     summary: str
+    suggested_reply: str
     metrics: dict[str, Any]
     created_at: datetime
 
@@ -64,3 +77,19 @@ class HealthResponse(BaseModel):
     database: Literal["ok", "error"]
     redis: Literal["ok", "error"]
     model: Literal["ready", "error"]
+
+
+class TaskCreatedResponse(BaseModel):
+    task_id: str
+    status: Literal["queued"]
+    status_url: str
+    websocket_url: str
+
+
+class TaskStatusResponse(BaseModel):
+    task_id: str
+    state: str
+    progress: int = Field(ge=0, le=100)
+    stage: str
+    ticket_id: int | None = None
+    result: dict[str, Any] | None = None
